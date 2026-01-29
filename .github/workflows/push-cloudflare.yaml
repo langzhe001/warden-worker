@@ -2,10 +2,13 @@ name: Build and Release
 
 on:
   push:
-    # 建议只在推送到特定分支或 tag 时触发发布
     branches: [main, uat, release*]
-    tags: ["v*"] 
+    tags: ["v*"]
   workflow_dispatch:
+
+# 必须添加权限声明，否则 Action 可能无法创建 Release
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -15,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 1. 环境准备 (保持原样)
+      # 1. 环境准备
       - run: rustup toolchain install stable --profile minimal
       - run: rustup target add wasm32-unknown-unknown
       - name: Install lld
@@ -27,27 +30,27 @@ jobs:
             cargo install worker-build
           fi
 
-      # 2. 注入变量 (注意：如果是公开发布，请考虑是否要泄露此 ID)
+      # 2. 注入变量 (如果构建过程需要这个 ID)
+      - name: Replace D1_DATABASE_ID
+        run: sed -i "s/\${D1_DATABASE_ID}/${{ secrets.D1_DATABASE_ID }}/g" wrangler.jsonc
 
-      # 3. 执行构建 (生成 build/worker 目录)
+      # 3. 执行构建 (这一步会生成 ./build 文件夹)
       - name: Build Worker
         run: worker-build --release
 
-      # 4. 压缩文件夹
-      # 这里我们将当前目录下必要的文件压缩（排除了巨大的 target 目录）
-      - name: Zip Bundle
-        run: |
-          zip -r release-artifact.zip . \
-          -x "target/*" ".git/*" ".github/*" "node_modules/*"
+      # 4. 仅压缩 build 文件夹
+      - name: Zip Build Folder
+        run: zip -r build-artifact.zip ./build
 
       # 5. 上传到 GitHub Release
       - name: Create Release and Upload Asset
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') # 仅在有 tag 时发布，或者删掉此行全量发布
         with:
-          files: release-artifact.zip
+          files: build-artifact.zip
+          # 如果通过 tag 触发，它会自动关联 tag；
+          # 如果是通过 branch 触发，建议设置一个固定的 tag 名或动态生成
+          tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
-          tag_name: ${{ github.ref }}
           draft: false
           prerelease: false
         env:
