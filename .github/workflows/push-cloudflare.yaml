@@ -1,51 +1,54 @@
-name: Build
+name: Build and Release
 
 on:
-    push:
-        branches: [main, uat, release*]
-    pull_request_target:
-        branches: [main, uat, release*]
-    workflow_dispatch:
+  push:
+    # 建议只在推送到特定分支或 tag 时触发发布
+    branches: [main, uat, release*]
+    tags: ["v*"] 
+  workflow_dispatch:
 
 jobs:
-    build:
-        name: Run production build
-        runs-on: ubuntu-latest
+  build:
+    name: Build and Package
+    runs-on: ubuntu-latest
 
-        steps:
-            - uses: actions/checkout@v4
+    steps:
+      - uses: actions/checkout@v4
 
-            # selecting a toolchain either by action or manual `rustup` calls should happen
-            # before the plugin, as the cache uses the current rustc version as its cache key
-            - run: rustup toolchain install stable --profile minimal
-            # - name: Cache Cargo registry and build artifacts
-            #   uses: actions/cache@v3
-            #   with:
-            #       path: |
-            #           target
-            #           ~/.cargo/bin
-            #           ~/.cargo/registry
-            #           ~/.cargo/git
-            #       key: cargo-build-cache-${{ github.run_id }}
-            #       restore-keys: |
-            #           cargo-build-cache-
-            - run: rustup target add wasm32-unknown-unknown
-            - name: Install lld
-              run: sudo apt install -y lld clang gcc llvm
+      # 1. 环境准备 (保持原样)
+      - run: rustup toolchain install stable --profile minimal
+      - run: rustup target add wasm32-unknown-unknown
+      - name: Install lld
+        run: sudo apt install -y lld clang gcc llvm
 
-            - name: Install worker-build
-              run: |
-                  if ! command -v worker-build &> /dev/null; then
-                    cargo install worker-build
-                  fi
+      - name: Install worker-build
+        run: |
+          if ! command -v worker-build &> /dev/null; then
+            cargo install worker-build
+          fi
 
-            - name: Replace D1_DATABASE_ID in wrangler.toml
-              run: sed -i "s/\${D1_DATABASE_ID}/${{ secrets.D1_DATABASE_ID }}/g" wrangler.jsonc
+      # 2. 注入变量 (注意：如果是公开发布，请考虑是否要泄露此 ID)
 
-            - uses: cloudflare/wrangler-action@v3
-              id: cf
-              env:
-                  D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
-              with:
-                  apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-                  accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # 3. 执行构建 (生成 build/worker 目录)
+      - name: Build Worker
+        run: worker-build --release
+
+      # 4. 压缩文件夹
+      # 这里我们将当前目录下必要的文件压缩（排除了巨大的 target 目录）
+      - name: Zip Bundle
+        run: |
+          zip -r release-artifact.zip . \
+          -x "target/*" ".git/*" ".github/*" "node_modules/*"
+
+      # 5. 上传到 GitHub Release
+      - name: Create Release and Upload Asset
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') # 仅在有 tag 时发布，或者删掉此行全量发布
+        with:
+          files: release-artifact.zip
+          name: Release ${{ github.ref_name }}
+          tag_name: ${{ github.ref }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
